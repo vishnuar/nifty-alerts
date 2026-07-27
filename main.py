@@ -150,28 +150,43 @@ def fetch_historical_candles():
     try:
         now = datetime.datetime.now(IST)
         today_str = now.strftime('%Y-%m-%d')
-        # Fetch data starting 5 days ago to ensure enough candles for indicators (VWAP, SuperTrend, MACD)
         from_str  = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
         api_version = "2.0"
         
-        # Pass all 5 required parameters
+        # Use '1minute' interval which is valid in Upstox API v2
         api_response = api_instance.get_historical_candle_data1(
             NIFTY_INSTRUMENT_KEY,
-            CANDLE_INTERVAL,
-            today_str,    # to_date
-            from_str,     # from_date
-            api_version   # api_version
+            "1minute",
+            today_str,
+            from_str,
+            api_version
         )
         
         candles = api_response.data.candles
+        if not candles:
+            return None
+
+        # Convert raw candles to DataFrame
         df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df.sort_values('timestamp').reset_index(drop=True)
-        return df
+        
+        # Resample 1-minute candles into 5-minute candles
+        df.set_index('timestamp', inplace=True)
+        df_5m = df.resample('5min').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum',
+            'oi': 'last'
+        }).dropna().reset_index()
+        
+        return df_5m
+
     except ApiException as e:
         print(f"[{datetime.datetime.now(IST).strftime('%H:%M:%S')}] Upstox API Exception: {e}")
         return None
-
 
 # ============================================================================
 # STRATEGY EVALUATION & ALERT LOGIC
