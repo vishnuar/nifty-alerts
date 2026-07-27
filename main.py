@@ -91,12 +91,19 @@ def calculate_vwap(df):
     df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
     df['date'] = pd.to_datetime(df['timestamp']).dt.date
     
-    df['cum_tp_vol'] = df.groupby('date').apply(
-        lambda x: (x['typical_price'] * (x['volume'] + 1)).cumsum()
-    ).reset_index(level=0, drop=True)
+    # Calculate price * volume per candle
+    df['tp_vol'] = df['typical_price'] * (df['volume'] + 1)
+    df['vol_adjusted'] = df['volume'] + 1
     
-    df['cum_vol'] = df.groupby('date')['volume'].apply(lambda x: (x + 1).cumsum()).reset_index(level=0, drop=True)
+    # Cumulative sum per daily trading session without using groupby.apply()
+    df['cum_tp_vol'] = df.groupby('date')['tp_vol'].cumsum()
+    df['cum_vol']    = df.groupby('date')['vol_adjusted'].cumsum()
+    
+    # Calculate VWAP
     df['vwap'] = np.where(df['cum_vol'] > 0, df['cum_tp_vol'] / df['cum_vol'], df['typical_price'].rolling(20).mean())
+    
+    # Clean up temporary helper columns
+    df.drop(columns=['tp_vol', 'vol_adjusted'], inplace=True)
     return df
 
 
