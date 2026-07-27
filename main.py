@@ -167,13 +167,18 @@ def fetch_historical_candles():
             return None
 
         # Convert raw candles to DataFrame
+        # Note: Upstox candle structure is [timestamp, open, high, low, close, volume, oi]
         df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values('timestamp').reset_index(drop=True)
         
-        # Resample 1-minute candles into 5-minute candles
+        # 1. Parse timestamps to datetime FIRST
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # 2. Sort explicitly in ASCENDING order (oldest to newest)
+        df = df.sort_values('timestamp', ascending=True).reset_index(drop=True)
+        
+        # 3. Resample 1-minute candles into 5-minute candles
         df.set_index('timestamp', inplace=True)
-        df_5m = df.resample('5min').agg({
+        df_5m = df.resample('5min', label='left', closed='left').agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -187,7 +192,6 @@ def fetch_historical_candles():
     except ApiException as e:
         print(f"[{datetime.datetime.now(IST).strftime('%H:%M:%S')}] Upstox API Exception: {e}")
         return None
-
 
 # ============================================================================
 # STRATEGY EVALUATION & ALERT LOGIC
