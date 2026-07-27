@@ -148,17 +148,12 @@ def fetch_historical_candles():
     api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration))
     
     try:
-        now = datetime.datetime.now(IST)
-        today_str = now.strftime('%Y-%m-%d')
-        from_str  = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
         api_version = "2.0"
         
-        # Fetch 1minute candles from Upstox
-        api_response = api_instance.get_historical_candle_data1(
+        # 1. Use get_intra_day_candle_data for live current day 1-minute candles
+        api_response = api_instance.get_intra_day_candle_data(
             NIFTY_INSTRUMENT_KEY,
             "1minute",
-            today_str,
-            from_str,
             api_version
         )
         
@@ -166,17 +161,14 @@ def fetch_historical_candles():
         if not candles:
             return None
 
-        # Convert raw candles to DataFrame
-        # Note: Upstox candle structure is [timestamp, open, high, low, close, volume, oi]
+        # Upstox returns: [timestamp, open, high, low, close, volume, oi]
         df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
         
-        # 1. Parse timestamps to datetime FIRST
+        # 2. Convert timestamps and sort ASCENDING (oldest to newest)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
-        # 2. Sort explicitly in ASCENDING order (oldest to newest)
         df = df.sort_values('timestamp', ascending=True).reset_index(drop=True)
         
-        # 3. Resample 1-minute candles into 5-minute candles
+        # 3. Resample 1-minute candles into standard 5-minute candles
         df.set_index('timestamp', inplace=True)
         df_5m = df.resample('5min', label='left', closed='left').agg({
             'open': 'first',
@@ -192,7 +184,6 @@ def fetch_historical_candles():
     except ApiException as e:
         print(f"[{datetime.datetime.now(IST).strftime('%H:%M:%S')}] Upstox API Exception: {e}")
         return None
-
 # ============================================================================
 # STRATEGY EVALUATION & ALERT LOGIC
 # ============================================================================
