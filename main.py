@@ -148,12 +148,21 @@ def fetch_historical_candles():
     api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration))
     
     try:
-        today_str = datetime.datetime.now(IST).strftime('%Y-%m-%d')
+        now = datetime.datetime.now(IST)
+        today_str = now.strftime('%Y-%m-%d')
+        # Fetch data starting 5 days ago to ensure enough candles for indicators (VWAP, SuperTrend, MACD)
+        from_str  = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+        api_version = "2.0"
+        
+        # Pass all 5 required parameters
         api_response = api_instance.get_historical_candle_data1(
-            instrument_key=NIFTY_INSTRUMENT_KEY,
-            interval=CANDLE_INTERVAL,
-            to_date=today_str
+            NIFTY_INSTRUMENT_KEY,
+            CANDLE_INTERVAL,
+            today_str,    # to_date
+            from_str,     # from_date
+            api_version   # api_version
         )
+        
         candles = api_response.data.candles
         df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
         df['timestamp'] = pd.to_datetime(df['timestamp'])
