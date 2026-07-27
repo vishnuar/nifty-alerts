@@ -192,6 +192,112 @@ def fetch_historical_candles():
 # STRATEGY EVALUATION & ALERT LOGIC
 # ============================================================================
 def process_strategy(df):
+    global last_alert_time  # MUST BE AT THE VERY TOP OF THE FUNCTION
+    
+    if df is None or len(df) < 30:
+        print(f"[{datetime.datetime.now(IST).strftime('%H:%M:%S')}] Waiting for enough candle history (need >= 30 candles)...")
+        return
+
+    # Calculate indicators
+    df = calculate_vwap(df)
+    df = calculate_macd(df)
+    df = calculate_supertrend(df, SUPER_TREND_PERIOD, SUPER_TREND_MULTIPLIER)
+    
+    latest = df.iloc[-1]
+    prev   = df.iloc[-2]
+    
+    candle_time = latest['timestamp']
+
+    # Candle Structure Metrics
+    body       = abs(latest['close'] - latest['open'])
+    lower_wick = min(latest['open'], latest['close']) - latest['low']
+    upper_wick = latest['high'] - max(latest['open'], latest['close'])
+
+    is_green_candle = latest['close'] > latest['open']
+    is_red_candle   = latest['close'] < latest['open']
+
+    st_flipped_green = (latest['supertrend_signal'] == True) and (prev['supertrend_signal'] == False)
+    st_flipped_red   = (latest['supertrend_signal'] == False) and (prev['supertrend_signal'] == True)
+
+    # Indicator Conditions
+    ce_cond_vwap       = latest['close'] > latest['vwap']
+    ce_cond_supertrend = latest['supertrend_signal'] == True
+    ce_cond_macd       = latest['macd_hist'] > prev['macd_hist']
+
+    ce_trigger_pullback = lower_wick > (body * 1.0)
+    ce_trigger_breakout = is_green_candle and (body >= MIN_BREAKOUT_BODY_PTS) and (st_flipped_green or latest['close'] > prev['high'])
+
+    pe_cond_vwap       = latest['close'] < latest['vwap']
+    pe_cond_supertrend = latest['supertrend_signal'] == False
+    pe_cond_macd       = latest['macd_hist'] < prev['macd_hist']
+
+    pe_trigger_pullback = upper_wick > (body * 1.0)
+    pe_trigger_breakout = is_red_candle and (body >= MIN_BREAKOUT_BODY_PTS) and (st_flipped_red or latest['close'] < prev['low'])
+
+    # PRINT DIAGNOSTIC LOGS TO RAILWAY CONSOLE
+    print("--------------------------------------------------------------------------------")
+    print(f"⏰ [SCAN LOG] Candle Time: {candle_time.strftime('%H:%M:%S')} | Spot Close: {latest['close']}")
+    print(f"📊 Indicators  -> VWAP: {round(latest['vwap'], 2)} | SuperTrend: {'GREEN' if latest['supertrend_signal'] else 'RED'} | MACD Hist: {round(latest['macd_hist'], 2)} (Prev: {round(prev['macd_hist'], 2)})")
+    print(f"🕯️ Candle Body -> Body: {round(body, 2)} pts | Lower Wick: {round(lower_wick, 2)} | Upper Wick: {round(upper_wick, 2)}")
+    print(f"🚀 CE Status   -> VWAP: {ce_cond_vwap} | SuperTrend: {ce_cond_supertrend} | MACD Uptick: {ce_cond_macd} | Pullback: {ce_trigger_pullback} | Breakout: {ce_trigger_breakout}")
+    print(f"🔻 PE Status   -> VWAP: {pe_cond_vwap} | SuperTrend: {pe_cond_supertrend} | MACD Downtick: {pe_cond_macd} | Pullback: {pe_trigger_pullback} | Breakdown: {pe_trigger_breakout}")
+    print("--------------------------------------------------------------------------------")
+
+    if last_alert_time == candle_time:
+        print(f"[{datetime.datetime.now(IST).strftime('%H:%M:%S')}] Alert already sent for candle {candle_time.strftime('%H:%M:%S')}. Skipping.")
+        return
+
+    atm_strike = round(latest['close'] / 50) * 50
+
+    # 1. CALL OPTION (CE) TRIGGER
+    if ce_cond_vwap and ce_cond_supertrend and ce_cond_macd and (ce_trigger_pullback or ce_trigger_breakout):
+        signal_type   = "Pullback Rejection" if ce_trigger_pullback else "Breakout Momentum"
+        sl_spot_price = round(latest['low'] - SL_BUFFER_PTS, 2)
+        risk_points   = round(latest['close'] - sl_spot_price, 2)
+        target_1      = round(latest['close'] + (risk_points * 1.5), 2)
+        target_2      = round(latest['close'] + (risk_points * 2.0), 2)
+
+        message = (
+            f"🚀 *BUY CALL OPTION (CE) ALERT* 🚀\n\n"
+            f"📊 *Broker:* Upstox\n"
+            f"📊 *Index:* Nifty 50 (5-Min)\n"
+            f"💲 *Nifty Spot Price:* `{latest['close']}`\n"
+            f"🎯 *Suggested Strike:* `{atm_strike} CE` (ATM)\n\n"
+            f"🛑 *Spot Stop Loss:* `{sl_spot_price}` (-{risk_points} pts)\n"
+            f"🎯 *Target 1 (1:1.5):* `{target_1}`\n"
+            f"🎯 *Target 2 (1:2.0):* `{target_2}`\n\n"
+            f"📈 *Session VWAP:* `{round(latest['vwap'], 2)}`\n"
+            f"⚡ *Signal Type:* `{signal_type}`\n"
+            f"⏰ *Candle Time:* `{candle_time.strftime('%H:%M:%S')}`"
+        )
+        send_telegram_alert(message)
+        last_alert_time = candle_time
+        return
+
+    # 2. PUT OPTION (PE) TRIGGER
+    if pe_cond_vwap and pe_cond_supertrend and pe_cond_macd and (pe_trigger_pullback or pe_trigger_breakout):
+        signal_type   = "Pullback Rejection" if pe_trigger_pullback else "Breakdown Momentum"
+        sl_spot_price = round(latest['high'] + SL_BUFFER_PTS, 2)
+        risk_points   = round(sl_spot_price - latest['close'], 2)
+        target_1      = round(latest['close'] - (risk_points * 1.5), 2)
+        target_2      = round(latest['close'] - (risk_points * 2.0), 2)
+
+        message = (
+            f"🔻 *BUY PUT OPTION (PE) ALERT* 🔻\n\n"
+            f"📊 *Broker:* Upstox\n"
+            f"📊 *Index:* Nifty 50 (5-Min)\n"
+            f"💲 *Nifty Spot Price:* `{latest['close']}`\n"
+            f"🎯 *Suggested Strike:* `{atm_strike} PE` (ATM)\n\n"
+            f"🛑 *Spot Stop Loss:* `{sl_spot_price}` (+{risk_points} pts)\n"
+            f"🎯 *Target 1 (1:1.5):* `{target_1}`\n"
+            f"🎯 *Target 2 (1:2.0):* `{target_2}`\n\n"
+            f"📉 *Session VWAP:* `{round(latest['vwap'], 2)}`\n"
+            f"⚡ *Signal Type:* `{signal_type}`\n"
+            f"⏰ *Candle Time:* `{candle_time.strftime('%H:%M:%S')}`"
+        )
+        send_telegram_alert(message)
+        last_alert_time = candle_time
+        return
     global last_alert_time
     
     if df is None or len(df) < 30:
